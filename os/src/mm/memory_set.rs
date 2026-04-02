@@ -58,6 +58,12 @@ impl MemorySet {
         end_va: VirtAddr,
         permission: MapPermission,
     ) {
+        trace!(
+            "kernel: insert_framed_area start_va={:#x}, end_va={:#x}, permission={:?}",
+            start_va.0,
+            end_va.0,
+            permission
+        );
         self.push(
             MapArea::new(start_va, end_va, MapType::Framed, permission),
             None,
@@ -69,6 +75,48 @@ impl MemorySet {
             map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
+    }
+    /// Remove the map area with the given start virtual address, and unmap all mapped pages.
+    #[allow(unused)]
+    pub fn remove(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.floor();
+        trace!(
+            "kernel: remove area start_va={:#x}, end_va={:#x}",
+            start_va.0,
+            end_va.0
+        );
+        if let Some(pos) = self
+            .areas
+            .iter()
+            .position(|area| area.vpn_range.get_start() == start_vpn)
+        {
+            let area = &mut self.areas[pos];
+            trace!(
+                "kernel: found area to remove with start_vpn={:#x}",
+                area.vpn_range.get_start().0
+            );
+            if area.vpn_range.get_end() == end_vpn {
+                trace!(
+                    "kernel: area end_vpn={:#x} matches expected end_vpn={:#x}, unmapping",
+                    area.vpn_range.get_end().0,
+                    end_vpn.0
+                );
+                area.unmap(&mut self.page_table);
+                self.areas.remove(pos);
+            } else {
+                trace!(
+                    "kernel: area end_vpn={:#x} does not match expected end_vpn={:#x}",
+                    area.vpn_range.get_end().0,
+                    end_vpn.0
+                );
+                // not our mapped area
+                return false;
+            }
+            true
+        } else {
+            false
+        }
     }
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
@@ -261,6 +309,18 @@ impl MemorySet {
         } else {
             false
         }
+    }
+
+    /// Check if a Virt page number range is available to allocate (left close, right close)
+    #[allow(unused)]
+    pub fn check_vpn_range(&self, start: VirtPageNum, end: VirtPageNum) -> bool {
+        if start > end {
+            return false;
+        }
+        !self
+            .areas
+            .iter()
+            .any(|area| area.vpn_range.overlapped(start, end))
     }
 }
 /// map area structure, controls a contiguous piece of virtual memory

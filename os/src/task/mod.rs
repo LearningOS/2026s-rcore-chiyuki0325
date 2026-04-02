@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -165,6 +166,26 @@ impl TaskManager {
         let current = inner.current_task;
         inner.tasks[current].syscall_counter[id]
     }
+
+    fn check_vpn_range(&self, start: VirtPageNum, end: VirtPageNum) -> bool {
+        let inner = self.inner.read_access();
+        let memory_set = &inner.tasks[inner.current_task].memory_set;
+        memory_set.check_vpn_range(start, end)
+    }
+
+    fn insert_framed_area(&self, start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let memory_set = &mut inner.tasks[current].memory_set;
+        memory_set.insert_framed_area(start_va, end_va, permission);
+    }
+
+    fn unmap_area(&self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let memory_set = &mut inner.tasks[current].memory_set;
+        memory_set.remove(start_va, end_va)
+    }
 }
 
 /// Run the first task in task list.
@@ -223,4 +244,20 @@ pub fn increase_syscall_counter(id: usize) {
 /// Get syscall counter value with id 'id'
 pub fn get_syscall_count(id: usize) -> usize {
     TASK_MANAGER.get_syscall_count(id)
+}
+
+/// Check if a Virt page number range is available to allocate (left close, right close)
+pub fn check_vpn_range(start: VirtPageNum, end: VirtPageNum) -> bool {
+    TASK_MANAGER.check_vpn_range(start, end)
+}
+
+
+/// Insert a framed area to current task's memory set, and map it to virtual page number range [start_va, end_va)
+pub fn insert_framed_area(start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) {
+    TASK_MANAGER.insert_framed_area(start_va, end_va, permission);
+}
+
+/// Unmap the area with virtual page number range [start_va, end_va) in current task's memory set
+pub fn unmap_area(start_va: VirtAddr, end_va: VirtAddr) -> bool {
+    TASK_MANAGER.unmap_area(start_va, end_va)
 }

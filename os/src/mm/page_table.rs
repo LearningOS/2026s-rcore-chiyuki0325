@@ -1,10 +1,11 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 
+use crate::task::check_vpn_range;
+
 use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
-use riscv::addr::Page;
 
 bitflags! {
     /// page table entry flags
@@ -70,6 +71,10 @@ impl PageTableEntry {
     /// The page pointered by page table entry is executable?
     pub fn executable(&self) -> bool {
         (self.flags() & PTEFlags::X) != PTEFlags::empty()
+    }
+    /// The page pointered by page table entry is user-accessible?
+    pub fn user(&self) -> bool {
+        (self.flags() & PTEFlags::U) != PTEFlags::empty()
     }
 }
 
@@ -183,11 +188,19 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
 
 /// Translate&Copy a ptr *u8 to u8 value through page table
 pub fn translated_byte(token: usize, ptr: *const u8) -> Option<u8> {
+    trace!("kernel: translated_byte address={:#x}", ptr as usize);
     let page_table = PageTable::from_token(token);
     let va = VirtAddr::from(ptr as usize);
     let vpn = va.floor();
+    if !check_vpn_range(vpn, vpn) {
+        // page not in range
+        trace!("kernel: translated_byte address={:#x} is out of range", ptr as usize);
+        return None;
+    }
     let pte = page_table.translate(vpn)?;
-    if pte.is_valid() && pte.readable() {
+    if pte.is_valid() && pte.readable() && pte.user() {
+        trace!("kernel: translated ppn={:#x}", pte.ppn().0);
+        trace!("kernel: translated pte flags={:?}", pte.flags());
         Some(pte.ppn().get_bytes_array()[va.page_offset()])
     } else {
         None
@@ -200,7 +213,7 @@ pub fn translated_byte_ref(token: usize, ptr: *const u8) -> Option<&'static mut 
     let va = VirtAddr::from(ptr as usize);
     let vpn = va.floor();
     let pte = page_table.translate(vpn)?;
-    if pte.is_valid() {
+    if pte.is_valid() && pte.writable() && pte.user() {
         Some(&mut pte.ppn().get_bytes_array()[va.page_offset()])
     } else {
         None
