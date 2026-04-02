@@ -4,6 +4,7 @@ use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPag
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
+use riscv::addr::Page;
 
 bitflags! {
     /// page table entry flags
@@ -178,4 +179,30 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         start = end_va.into();
     }
     v
+}
+
+/// Translate&Copy a ptr *u8 to u8 value through page table
+pub fn translated_byte(token: usize, ptr: *const u8) -> Option<u8> {
+    let page_table = PageTable::from_token(token);
+    let va = VirtAddr::from(ptr as usize);
+    let vpn = va.floor();
+    let pte = page_table.translate(vpn)?;
+    if pte.is_valid() && pte.readable() {
+        Some(pte.ppn().get_bytes_array()[va.page_offset()])
+    } else {
+        None
+    }
+}
+
+/// Translate&Copy a ptr *u8 to mutable u8 reference through page table
+pub fn translated_byte_ref(token: usize, ptr: *const u8) -> Option<&'static mut u8> {
+    let page_table = PageTable::from_token(token);
+    let va = VirtAddr::from(ptr as usize);
+    let vpn = va.floor();
+    let pte = page_table.translate(vpn)?;
+    if pte.is_valid() {
+        Some(&mut pte.ppn().get_bytes_array()[va.page_offset()])
+    } else {
+        None
+    }
 }
