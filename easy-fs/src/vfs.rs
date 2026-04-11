@@ -90,6 +90,21 @@ impl Inode {
         }
         disk_inode.increase_size(new_size, v, &self.block_device);
     }
+    /// Decrease the size of a disk inode
+    fn decrease_size(
+        &self,
+        new_size: u32,
+        disk_inode: &mut DiskInode,
+        fs: &mut MutexGuard<EasyFileSystem>,
+    ) {
+        if new_size > disk_inode.size {
+            return;
+        }
+        let recycled_blocks = disk_inode.decrease_size(new_size, &self.block_device);
+        for blockblock_id in recycled_blocks {
+            fs.dealloc_data(blockblock_id);
+        }
+    }
     /// Create inode under current inode by name
     pub fn create(&self, name: &str) -> Option<Arc<Inode>> {
         let mut fs = self.fs.lock();
@@ -138,6 +153,93 @@ impl Inode {
         )))
         // release efs lock automatically by compiler
     }
+
+    /// Make a hard link
+    pub fn linkat(&self, src: &str, dst: &str) -> bool {
+        if src == dst {
+            return false;
+        }
+        let mut fs = self.fs.lock();
+
+        if let Some(src_inode_id) = self.read_disk_inode(|root_inode: &DiskInode| {
+            assert!(root_inode.is_dir());
+            self.find_inode_id(src, root_inode)
+        }) {
+            // create new direntry (link)
+            self.modify_disk_inode(|root_inode| {
+                // append linked file in the dirent
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                let new_size = (file_count + 1) * DIRENT_SZ;
+                // increase size
+                self.increase_size(new_size as u32, root_inode, &mut fs);
+                // write dirent
+                let dirent = DirEntry::new(dst, src_inode_id);
+                root_inode.write_at(
+                    file_count * DIRENT_SZ,
+                    dirent.as_bytes(),
+                    &self.block_device,
+                );
+            });
+            let (block_id, block_offset) = fs.get_disk_inode_pos(src_inode_id);
+            // increase reference counter
+            get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+                .lock()
+                .modify(block_offset, |src_inode: &mut DiskInode| {
+                    src_inode.links += 1;
+                });
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Delete a hard link or delete file itself
+    pub fn unlinkat(&self, name: &str) -> bool {
+        if let Some(link_inode_id) = self.read_disk_inode(|root_inode: &DiskInode| {
+            assert!(root_inode.is_dir());
+            self.find_inode_id(name, root_inode)
+        }) {
+            let (block_id, block_offset) = self.fs.lock().get_disk_inode_pos(link_inode_id);
+            // decrease reference counter
+            let links = get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+                .lock()
+                .modify(block_offset, |link_inode: &mut DiskInode| {
+                    link_inode.links -= 1;
+                    link_inode.links
+                });
+            // remove corresponding direntry
+            self.modify_disk_inode(|root_inode| {
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                let new_size = (file_count - 1) * DIRENT_SZ;
+                // decrease size
+                // TODO self.decrease_size_size(new_size as u32, root_inode, &mut fs);
+                // remove linked file dirent
+                root_inode.write_at(new_size, &[0; DIRENT_SZ], &self.block_device);
+            });
+            // delete file if links == 0
+            if links == 0 {
+                // delete data
+                let mut fs: MutexGuard<'_, EasyFileSystem> = self.fs.lock();
+                let recycled_blocks =
+                    get_block_cache(block_id as usize, Arc::clone(&self.block_device))
+                        .lock()
+                        .modify(block_offset, |src_inode: &mut DiskInode| {
+                            src_inode.clear_size(&self.block_device)
+                        });
+                // recycle corresponding data blocks
+                for block_id in recycled_blocks {
+                    fs.dealloc_data(block_id);
+                }
+                // delete inode itself
+                fs.dealloc_inode(link_inode_id);
+            }
+            true
+        } else {
+            // file not exist
+            false
+        }
+    }
+
     /// List inodes under current inode
     pub fn ls(&self) -> Vec<String> {
         let _fs = self.fs.lock();

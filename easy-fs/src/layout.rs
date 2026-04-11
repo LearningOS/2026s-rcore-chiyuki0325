@@ -6,7 +6,7 @@ use core::fmt::{Debug, Formatter, Result};
 /// Magic number for sanity check
 const EFS_MAGIC: u32 = 0x3b800001;
 /// The max number of direct inodes
-const INODE_DIRECT_COUNT: usize = 28;
+const INODE_DIRECT_COUNT: usize = 27;
 /// The max length of inode name
 const NAME_LENGTH_LIMIT: usize = 27;
 /// The max number of indirect1 inodes
@@ -85,6 +85,7 @@ pub struct DiskInode {
     pub direct: [u32; INODE_DIRECT_COUNT],
     pub indirect1: u32,
     pub indirect2: u32,
+    pub links: u8, // reference count
     type_: DiskInodeType,
 }
 
@@ -96,6 +97,7 @@ impl DiskInode {
         self.direct.iter_mut().for_each(|v| *v = 0);
         self.indirect1 = 0;
         self.indirect2 = 0;
+        self.links = 1;
         self.type_ = type_;
     }
     /// Whether this inode is a directory
@@ -161,7 +163,7 @@ impl DiskInode {
                 })
         }
     }
-    /// Inncrease the size of current disk inode
+    /// Increase the size of current disk inode
     pub fn increase_size(
         &mut self,
         new_size: u32,
@@ -233,6 +235,15 @@ impl DiskInode {
                     }
                 }
             });
+    }
+    
+    /// Decrease the size of current disk inode
+    pub fn decrease_size(
+        &mut self,
+        new_size: u32,
+        block_device: &Arc<dyn BlockDevice>,
+    ) -> Vec<u32> {
+        todo!();
     }
 
     /// Clear size to zero and return blocks that should be deallocated.
