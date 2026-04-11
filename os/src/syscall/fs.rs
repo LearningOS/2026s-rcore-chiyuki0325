@@ -1,5 +1,7 @@
 //! File and filesystem-related syscalls
-use crate::fs::{OpenFlags, Stat, linkat, open_file, unlinkat};
+use core::mem::size_of;
+
+use crate::fs::{linkat, open_file, unlinkat, OSInode, OpenFlags, Stat};
 use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
 use crate::task::{current_task, current_user_token};
 
@@ -76,11 +78,40 @@ pub fn sys_close(fd: usize) -> isize {
 }
 
 /// YOUR JOB: Implement fstat.
-pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
+pub fn sys_fstat(fd: usize, st: *mut Stat) -> isize {
+    let task = current_task().unwrap();
+
+    trace!("kernel:pid[{}] sys_fstat fd={}", task.pid.0, fd);
+
+    let token = task.get_user_token();
+    let ptr = st as *mut u8;
+    let len = size_of::<Stat>();
+    let buffers = translated_byte_buffer(token, ptr, len);
+
+    let inner = task.inner_read_access();
+    if let Some(some_file) = inner.fd_table.get(fd) {
+        if let Some(file) = some_file {
+            let file = file.clone();
+            if let Ok(inode) = OSInode::downcast_arc(file) {
+                // is a file on disk with deterministic inode
+                let stat = inode.stats();
+                trace!("kernel:pid[{}] sys_fstat stat={:#?}", task.pid.0, stat);
+
+                unsafe {
+                    let result_ptr = &stat as *const Stat as *const u8;
+                    let mut result_slice = core::slice::from_raw_parts(result_ptr, len);
+                    buffers.into_iter().for_each(|part_dst| {
+                        let part_size = part_dst.len();
+                        let (part_src, slice_remaining) = result_slice.split_at(part_size);
+                        part_dst.copy_from_slice(part_src);
+                        result_slice = slice_remaining;
+                    });
+                }
+                return 0
+            }
+        }
+    }
+
     -1
 }
 

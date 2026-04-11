@@ -3,6 +3,7 @@
 mod inode;
 mod stdio;
 
+use core::any::TypeId;
 use crate::mm::UserBuffer;
 
 /// trait File for all file types
@@ -15,6 +16,8 @@ pub trait File: Send + Sync {
     fn read(&self, buf: UserBuffer) -> usize;
     /// write to the file from buf, return the number of bytes written
     fn write(&self, buf: UserBuffer) -> usize;
+    /// get underlying struct type id for downcast
+    fn type_id(&self) -> TypeId;
 }
 
 /// The stat of a inode

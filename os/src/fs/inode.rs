@@ -4,10 +4,13 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
+use core::any::TypeId;
+
 use super::File;
-use crate::drivers::BLOCK_DEVICE;
+use crate::fs::StatMode;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
+use crate::{drivers::BLOCK_DEVICE, fs::Stat};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::*;
@@ -52,6 +55,22 @@ impl OSInode {
             v.extend_from_slice(&buffer[..len]);
         }
         v
+    }
+    /// read fstat
+    pub fn stats(&self) -> Stat {
+        let inner = self.inner.read_access();
+        let inode = &inner.inode;
+        Stat {
+            dev: 0,
+            ino: inode.id as u64,
+            mode: if inode.id == 0 {
+                StatMode::DIR
+            } else {
+                StatMode::FILE
+            },
+            nlink: inode.links as u32,
+            pad: [0; 7],
+        }
     }
 }
 
@@ -165,5 +184,21 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<Self>()
+    }
+}
+
+impl OSInode {
+    /// Downcast Arc<dyn File> to Arc<dyn OSInode> for fstat
+    pub fn downcast_arc(item: Arc<dyn File>) -> Result<Arc<Self>, ()> {
+        if item.type_id() == TypeId::of::<Self>() {
+            let raw: *const dyn File = Arc::into_raw(item);
+            let concrete_raw = raw as *const Self;
+            unsafe { Ok(Arc::from_raw(concrete_raw)) }
+        } else {
+            Err(())
+        }
     }
 }
