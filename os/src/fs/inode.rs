@@ -150,8 +150,11 @@ pub fn linkat(src: &str, dst: &str) -> bool {
 }
 
 /// unlinkat wrapper
-pub fn unlinkat(name: &str) -> bool {
-    ROOT_INODE.unlinkat(name)
+pub fn unlinkat(name: &str) -> Option<u8> {
+    trace!("pre unlink ls {:?}", ROOT_INODE.ls());
+    let u = ROOT_INODE.unlinkat(name);
+    trace!("after unlink ls {:?}", ROOT_INODE.ls());
+    u
 }
 
 impl File for OSInode {

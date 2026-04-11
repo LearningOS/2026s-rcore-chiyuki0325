@@ -69,7 +69,7 @@ impl Inode {
             self.find_inode_id(name, disk_inode).map(|inode_id| {
                 let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
                 Arc::new(Self::new(
-                    inode_id, 
+                    inode_id,
                     block_id,
                     block_offset,
                     self.fs.clone(),
@@ -201,7 +201,7 @@ impl Inode {
     }
 
     /// Delete a hard link or delete file itself
-    pub fn unlinkat(&self, name: &str) -> bool {
+    pub fn unlinkat(&self, name: &str) -> Option<u8> {
         if let Some(link_inode_id) = self.read_disk_inode(|root_inode: &DiskInode| {
             assert!(root_inode.is_dir());
             self.find_inode_id(name, root_inode)
@@ -218,8 +218,39 @@ impl Inode {
             self.modify_disk_inode(|root_inode| {
                 let file_count = (root_inode.size as usize) / DIRENT_SZ;
                 let new_size = (file_count - 1) * DIRENT_SZ;
+
+                // find last dirent
+                let mut last_dirent = DirEntry::empty();
+                root_inode.read_at(
+                    (file_count - 1) * DIRENT_SZ,
+                    last_dirent.as_bytes_mut(),
+                    &self.block_device,
+                );
+
+                // find current dirent
+                let mut cur_dirent = DirEntry::empty();
+                for i in 0..file_count {
+                    root_inode.read_at(
+                        DIRENT_SZ * i,
+                        cur_dirent.as_bytes_mut(),
+                        &self.block_device,
+                    );
+                    if cur_dirent.name() == name {
+                        // swap current dirent with the last dirent
+                        root_inode.write_at(
+                            DIRENT_SZ * i,
+                            last_dirent.as_bytes(),
+                            &self.block_device,
+                        );
+                        break;
+                    }
+                }
+
                 // decrease size
-                // TODO self.decrease_size_size(new_size as u32, root_inode, &mut fs);
+                root_inode.size = new_size as u32;  // space not recycled, leaking!
+                // TODO self.decrease_size(new_size as u32, root_inode, &mut fs);
+                // to avoid leak
+
                 // remove linked file dirent
                 root_inode.write_at(new_size, &[0; DIRENT_SZ], &self.block_device);
             });
@@ -240,18 +271,17 @@ impl Inode {
                 // delete inode itself
                 fs.dealloc_inode(link_inode_id);
             }
-            true
+            block_cache_sync_all();
+            Some(links)
         } else {
             // file not exist
-            false
+            None
         }
     }
 
     /// get self reference counter
     pub fn links(&self) -> u8 {
-        self.read_disk_inode(|disk_inode| {
-            disk_inode.links
-        })
+        self.read_disk_inode(|disk_inode| disk_inode.links)
     }
 
     /// List inodes under current inode

@@ -107,7 +107,7 @@ pub fn sys_fstat(fd: usize, st: *mut Stat) -> isize {
                         result_slice = slice_remaining;
                     });
                 }
-                return 0
+                return 0;
             }
         }
     }
@@ -135,16 +135,26 @@ pub fn sys_linkat(old_name: *const u8, new_name: *const u8) -> isize {
 
 /// YOUR JOB: Implement unlinkat.
 pub fn sys_unlinkat(name: *const u8) -> isize {
-    let token = current_user_token();
+    let task = current_task().unwrap();
+    let token = task.get_user_token();
     let name = translated_str(token, name);
     trace!(
         "kernel:pid[{}] sys_unlinkat name={}",
-        current_task().unwrap().pid.0,
+        task.pid.0,
         name
     );
-    if unlinkat(&name) {
+    if let Some(links) = unlinkat(&name) {
+        trace!(
+            "kernel:pid[{}] sys_unlinkat remaining links={}",
+            task.pid.0,
+            links
+        );
         0
     } else {
+        trace!(
+            "kernel:pid[{}] sys_unlinkat not found",
+            task.pid.0,
+        );
         -1
     }
 }
