@@ -244,6 +244,14 @@ where
     pub fn get_end(&self) -> T {
         self.r
     }
+    #[allow(unused)]
+    pub fn range_overlapped(&self, range: SimpleRange<T>) -> bool {
+        self.overlapped(range.get_start(), range.get_end())
+    }
+    #[allow(unused)]
+    pub fn overlapped(&self, start: T, end: T) -> bool {
+        start <= self.l && end >= self.r
+    }
 }
 impl<T> IntoIterator for SimpleRange<T>
 where

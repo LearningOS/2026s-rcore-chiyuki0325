@@ -9,6 +9,8 @@ pub struct TaskManager {
     ready_queue: VecDeque<Arc<TaskControlBlock>>,
 }
 
+pub const BIG_STRIDE: usize = 1_000_000;
+
 /// A simple FIFO scheduler.
 impl TaskManager {
     ///Creat an empty TaskManager
@@ -23,7 +25,27 @@ impl TaskManager {
     }
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        if self.ready_queue.is_empty() {
+            return None;
+        }
+
+        let min_task_idx = self
+            .ready_queue
+            .iter()
+            .enumerate()
+            .min_by(|(_, x), (_, y)| {
+                let xi = x.inner_read_access();
+                let yi = y.inner_read_access();
+                xi.stride.cmp(&yi.stride)
+            })?.0;
+
+        // increment stride
+        let task = self.ready_queue.swap_remove_back(min_task_idx)?;
+        let mut task_inner = task.inner_exclusive_access();
+        task_inner.stride += BIG_STRIDE / task_inner.priority;
+        drop(task_inner);
+
+        Some(task)
     }
 }
 
