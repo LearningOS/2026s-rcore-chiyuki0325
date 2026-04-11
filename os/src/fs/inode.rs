@@ -68,7 +68,7 @@ impl OSInode {
             } else {
                 StatMode::FILE
             },
-            nlink: inode.links as u32,
+            nlink: inode.links() as u32,
             pad: [0; 7],
         }
     }

@@ -10,8 +10,6 @@ use spin::{Mutex, MutexGuard};
 pub struct Inode {
     /// underlying on-disk inode id
     pub id: usize,
-    /// underlying on-disk reference counter
-    pub links: u8,
     block_id: usize,
     block_offset: usize,
     fs: Arc<Mutex<EasyFileSystem>>,
@@ -22,7 +20,6 @@ impl Inode {
     /// Create a vfs inode
     pub fn new(
         id: u32,
-        links: u8,
         block_id: u32,
         block_offset: usize,
         fs: Arc<Mutex<EasyFileSystem>>,
@@ -30,7 +27,6 @@ impl Inode {
     ) -> Self {
         Self {
             id: id as usize,
-            links: links,
             block_id: block_id as usize,
             block_offset,
             fs,
@@ -74,7 +70,6 @@ impl Inode {
                 let (block_id, block_offset) = fs.get_disk_inode_pos(inode_id);
                 Arc::new(Self::new(
                     inode_id, 
-                    disk_inode.links,
                     block_id,
                     block_offset,
                     self.fs.clone(),
@@ -158,7 +153,6 @@ impl Inode {
         // return inode
         Some(Arc::new(Self::new(
             new_inode_id,
-            1,
             block_id,
             block_offset,
             self.fs.clone(),
@@ -251,6 +245,13 @@ impl Inode {
             // file not exist
             false
         }
+    }
+
+    /// get self reference counter
+    pub fn links(&self) -> u8 {
+        self.read_disk_inode(|disk_inode| {
+            disk_inode.links
+        })
     }
 
     /// List inodes under current inode
