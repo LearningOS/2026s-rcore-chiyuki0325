@@ -9,7 +9,7 @@ use alloc::{collections::VecDeque, sync::Arc};
 /// Mutex trait
 pub trait Mutex: Sync + Send {
     /// Lock the mutex
-    fn lock(&self);
+    fn lock(&self) -> Result<(), ()>;
     /// Unlock the mutex
     fn unlock(&self);
 }
@@ -30,7 +30,7 @@ impl MutexSpin {
 
 impl Mutex for MutexSpin {
     /// Lock the spinlock mutex
-    fn lock(&self) {
+    fn lock(&self) -> Result<(), ()> {
         trace!("kernel: MutexSpin::lock");
         loop {
             let mut locked = self.locked.exclusive_access();
@@ -40,7 +40,7 @@ impl Mutex for MutexSpin {
                 continue;
             } else {
                 *locked = true;
-                return;
+                return Ok(());
             }
         }
     }
@@ -59,6 +59,7 @@ pub struct MutexBlocking {
 
 pub struct MutexBlockingInner {
     locked: bool,
+    owner: Option<usize>,
     wait_queue: VecDeque<Arc<TaskControlBlock>>,
 }
 
@@ -70,6 +71,7 @@ impl MutexBlocking {
             inner: unsafe {
                 UPSafeCell::new(MutexBlockingInner {
                     locked: false,
+                    owner: None,
                     wait_queue: VecDeque::new(),
                 })
             },
@@ -79,15 +81,25 @@ impl MutexBlocking {
 
 impl Mutex for MutexBlocking {
     /// lock the blocking mutex
-    fn lock(&self) {
+    fn lock(&self) -> Result<(), ()> {
         trace!("kernel: MutexBlocking::lock");
         let mut mutex_inner = self.inner.exclusive_access();
+        let task = current_task().unwrap();
+        let tid = task.inner_exclusive_access().res.as_ref().unwrap().tid;
+        let detect = task.process.upgrade().unwrap().inner_exclusive_access().deadlock_detect_enabled;
         if mutex_inner.locked {
-            mutex_inner.wait_queue.push_back(current_task().unwrap());
+            if detect && mutex_inner.owner == Some(tid) {
+                // reentrant locking is not allowed for blocking mutex, return error
+                return Err(());
+            }
+            mutex_inner.wait_queue.push_back(task);
             drop(mutex_inner);
             block_current_and_run_next();
+            Ok(())
         } else {
             mutex_inner.locked = true;
+            mutex_inner.owner = Some(tid);
+            Ok(())
         }
     }
 
@@ -100,6 +112,7 @@ impl Mutex for MutexBlocking {
             wakeup_task(waking_task);
         } else {
             mutex_inner.locked = false;
+            mutex_inner.owner = None;
         }
     }
 }
