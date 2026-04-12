@@ -51,6 +51,14 @@ pub struct ProcessControlBlockInner {
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
     /// enable deadlock detection or not
     pub deadlock_detect_enabled: bool,
+    /// data structures for deadlock detection
+    
+    /// available[sem_id]
+    pub available_sem: Vec<isize>,
+    /// allocated[tid][sem_id]
+    pub allocated_sem: Vec<Vec<isize>>,
+    /// need[tid][sem_id]
+    pub need_sem: Vec<Vec<isize>>,
 }
 
 impl ProcessControlBlockInner {
@@ -122,6 +130,9 @@ impl ProcessControlBlock {
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
                     deadlock_detect_enabled: false,
+                    available_sem: Vec::new(),
+                    allocated_sem: Vec::new(),
+                    need_sem: Vec::new(),
                 })
             },
         });
@@ -249,6 +260,9 @@ impl ProcessControlBlock {
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
                     deadlock_detect_enabled: false,
+                    available_sem: Vec::new(),
+                    allocated_sem: Vec::new(),
+                    need_sem: Vec::new(),
                 })
             },
         });

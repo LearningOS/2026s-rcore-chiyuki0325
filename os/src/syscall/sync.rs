@@ -2,6 +2,7 @@ use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore};
 use crate::task::{block_current_and_run_next, current_process, current_task};
 use crate::timer::{add_timer, get_time_ms};
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 /// sleep syscall
 pub fn sys_sleep(ms: usize) -> isize {
     trace!(
@@ -119,53 +120,242 @@ pub fn sys_semaphore_create(res_count: usize) -> isize {
         .map(|(id, _)| id)
     {
         process_inner.semaphore_list[id] = Some(Arc::new(Semaphore::new(res_count)));
+        // extend available_sem for deadlock detection
+        process_inner.available_sem[id] = res_count as isize;
+        for thread_alloc in process_inner.allocated_sem.iter_mut() {
+            thread_alloc[id] = 0;
+        }
+        for thread_need in process_inner.need_sem.iter_mut() {
+            thread_need[id] = 0;
+        }
         id
     } else {
         process_inner
             .semaphore_list
             .push(Some(Arc::new(Semaphore::new(res_count))));
-        process_inner.semaphore_list.len() - 1
+        let id = process_inner.semaphore_list.len() - 1;
+        // extend available_sem for deadlock detection
+        process_inner.available_sem.push(res_count as isize);
+        for thread_alloc in process_inner.allocated_sem.iter_mut() {
+            thread_alloc.push(0);
+        }
+        for thread_need in process_inner.need_sem.iter_mut() {
+            thread_need.push(0);
+        }
+        id
     };
     id as isize
 }
 /// semaphore up syscall
 pub fn sys_semaphore_up(sem_id: usize) -> isize {
+    let tid = current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid;
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_up",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        tid
     );
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
     sem.up();
+    // borrow process_inner again to update banker state after up operation
+    let mut process_inner = process.inner_exclusive_access();
+    if process_inner.deadlock_detect_enabled {
+        // release entrance
+
+        // allocated - 1
+        process_inner.allocated_sem[tid][sem_id] -= 1;
+
+        // available + 1
+        process_inner.available_sem[sem_id] += 1;
+
+        // trace
+
+        trace!(
+            "kernel:pid[{}] tid[{}] sys_semaphore_up after banker: available_sem={:?}",
+            current_task().unwrap().process.upgrade().unwrap().getpid(),
+            tid,
+            process_inner.available_sem
+        );
+        trace!(
+            "kernel:pid[{}] tid[{}] sys_semaphore_up after banker: allocated_sem={:?}",
+            current_task().unwrap().process.upgrade().unwrap().getpid(),
+            tid,
+            process_inner.allocated_sem
+        );
+    }
+    drop(process_inner);
     0
 }
 /// semaphore down syscall
 pub fn sys_semaphore_down(sem_id: usize) -> isize {
+    let tid = current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid;
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_down",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
-        current_task()
-            .unwrap()
-            .inner_exclusive_access()
-            .res
-            .as_ref()
-            .unwrap()
-            .tid
+        tid
     );
     let process = current_process();
-    let process_inner = process.inner_exclusive_access();
+    let mut process_inner = process.inner_exclusive_access();
+    if process_inner.deadlock_detect_enabled {
+        let threads = process_inner.allocated_sem.len();
+        let sems = process_inner.semaphore_list.len();
+
+        trace!(
+            "kernel:pid[{}] tid[{}] sys_semaphore_down banker: threads={}, sems={}",
+            current_task().unwrap().process.upgrade().unwrap().getpid(),
+            tid,
+            threads,
+            sems
+        );
+
+        trace!(
+            "kernel:pid[{}] tid[{}] sys_semaphore_down banker: available_sem={:?}",
+            current_task().unwrap().process.upgrade().unwrap().getpid(),
+            tid,
+            process_inner.available_sem
+        );
+
+        trace!(
+            "kernel:pid[{}] tid[{}] sys_semaphore_down banker: allocated_sem={:?}",
+            current_task().unwrap().process.upgrade().unwrap().getpid(),
+            tid,
+            process_inner.allocated_sem
+        );
+
+        // need + 1
+        while process_inner.need_sem.len() <= tid {
+            process_inner.need_sem.push(Vec::new());
+        }
+        while process_inner.need_sem[tid].len() <= sem_id {
+            process_inner.need_sem[tid].push(0);
+        }
+        process_inner.need_sem[tid][sem_id] += 1;
+
+        trace!(
+            "kernel:pid[{}] tid[{}] sys_semaphore_down banker: need_sem added={:?}",
+            current_task().unwrap().process.upgrade().unwrap().getpid(),
+            tid,
+            process_inner.need_sem
+        );
+
+        // run detection
+        let mut work = process_inner.available_sem.clone();
+        let mut finish = Vec::new();
+        for _ in 0..threads {
+            finish.push(false);
+        }
+
+        for _ in 0..threads {
+            for t in 0..threads {
+                trace!(
+                    "kernel:pid[{}] tid[{}] sys_semaphore_down banker: checking thread {}",
+                    current_task().unwrap().process.upgrade().unwrap().getpid(),
+                    tid,
+                    t
+                );
+                if !finish[t] {
+                trace!(
+                    "kernel:pid[{}] tid[{}] sys_semaphore_down banker: thread not finish, need={:?}, work={:?}",
+                    current_task().unwrap().process.upgrade().unwrap().getpid(),
+                    tid,
+                    process_inner.need_sem[t],
+                    work
+                );
+                    if process_inner.need_sem[t]
+                        .iter()
+                        .enumerate()
+                        .all(|(sem_id, need)| *need <= work[sem_id])
+                    {
+                        for sem_id in 0..sems {
+                            work[sem_id] += process_inner.allocated_sem[t][sem_id];
+                        }
+                        finish[t] = true;
+                        trace!(
+                            "kernel:pid[{}] tid[{}] sys_semaphore_down banker: thread {} can finish",
+                            current_task().unwrap().process.upgrade().unwrap().getpid(),
+                            tid,
+                            t
+                        );
+                        trace!(
+                            "kernel:pid[{}] tid[{}] sys_semaphore_down banker: work after thread {} finish: {:?}",
+                            current_task().unwrap().process.upgrade().unwrap().getpid(),
+                            tid,
+                            t,
+                            work
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+
+        // if all finish, then no deadlock, otherwise deadlock happens
+        if finish.iter().any(|f| !f) {
+            // rollback need + 1
+            process_inner.need_sem[tid][sem_id] -= 1;
+            drop(process_inner);
+            trace!(
+                "kernel:pid[{}] tid[{}] sys_semaphore_down deadlock detected!",
+                current_task().unwrap().process.upgrade().unwrap().getpid(),
+                tid
+            );
+            return -0xdead;
+        }
+    }
+
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
     sem.down();
+
+    // borrow process_inner again to update banker state after down operation
+    let mut process_inner = process.inner_exclusive_access();
+    if process_inner.deadlock_detect_enabled {
+        // down entrance
+
+        // available - 1
+        process_inner.available_sem[sem_id] -= 1;
+
+        // allocated + 1
+        while process_inner.allocated_sem.len() <= tid {
+            process_inner.allocated_sem.push(Vec::new());
+        }
+        while process_inner.allocated_sem[tid].len() <= sem_id {
+            process_inner.allocated_sem[tid].push(0);
+        }
+        process_inner.allocated_sem[tid][sem_id] += 1;
+
+        // need - 1
+        process_inner.need_sem[tid][sem_id] -= 1;
+
+        // trace
+        trace!(
+            "kernel:pid[{}] tid[{}] sys_semaphore_down after banker: available_sem={:?}",
+            current_task().unwrap().process.upgrade().unwrap().getpid(),
+            tid,
+            process_inner.available_sem
+        );
+
+        trace!(
+            "kernel:pid[{}] tid[{}] sys_semaphore_down after banker: allocated_sem={:?}",
+            current_task().unwrap().process.upgrade().unwrap().getpid(),
+            tid,
+            process_inner.allocated_sem
+        );
+    }
     0
 }
 /// condvar create syscall
